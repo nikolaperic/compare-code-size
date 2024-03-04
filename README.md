@@ -15,17 +15,19 @@ After computing the difference in code size, two graphs are generated to showcas
 
 ### Required Python modules:
 
-- ```os```
-- ```subprocess```
-- ```argparse```
-- ```pandas```
-- ```numpy```
-- ```matplotlib```
+- `pandas`
+- `numpy`
+- `matplotlib`
+
+Install the dependencies by running:
+```bash
+pip install -r requirements.txt
+```
 
 ### Required installed tools:
 
-- ```size``` - list section sizes and total size of binary files (https://www.gnu.org/software/binutils/)
-- ```file``` - determine file type (https://darwinsys.com/file/)
+- `size` - list section sizes and total size of binary files (https://www.gnu.org/software/binutils/)
+- `file` - determine file type (https://darwinsys.com/file/)
 
 ### Usage:
 

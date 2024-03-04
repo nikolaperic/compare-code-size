@@ -5,11 +5,13 @@ import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
 
+CLEAR_LINE = '\x1b[2K'
+
 # Output format (Berkeley):
 # text    data     bss    dec     hex    filename
 # 164       0       0     164      a4    libstubs.c.o (ex /home/syrmia/llvm-nanomips/llvm-test-suite-nanomips-build-1/libstubs.a)
 
-def collectCodeSizeData(build_path, command, commandArgs) -> pd.DataFrame:
+def collectCodeSizeData(build_path, size_tool, size_tool_args) -> pd.DataFrame:
 
     build_abs_path = os.path.abspath(build_path)
 
@@ -30,10 +32,12 @@ def collectCodeSizeData(build_path, command, commandArgs) -> pd.DataFrame:
             file_processsRetVal = subprocess.run(["file", os.path.join(root, file)], capture_output=True)
             file_processsRetVal.check_returncode()
             file_output = file_processsRetVal.stdout.decode('utf-8')
-            if file_output.find("executable") == -1:
+            if file_output.find("ELF") == -1 or file_output.find("executable") == -1:
                 continue
 
-            processsRetVal = subprocess.run([command] + commandArgs + [os.path.join(root, file)],
+            print(CLEAR_LINE + 'Processing ' + file_base, end='\r')
+
+            processsRetVal = subprocess.run([size_tool] + size_tool_args + [os.path.join(root, file)],
                                             capture_output=True
                                            )
             # Skip all files with unrecognized format.
@@ -67,48 +71,60 @@ def collectCodeSizeData(build_path, command, commandArgs) -> pd.DataFrame:
             # Append new row
             data.loc[len(data),] = values
 
+    print(CLEAR_LINE, end='')
     return data
 
-def parse_program_args(parser):
+def parse_program_args():
+    parser = argparse.ArgumentParser(description='Search for executables and generate code size diff.')
     parser.add_argument('directory_path_1', metavar='directory_path_1', action="store",
                     help="The first directory to search for executables.")
     parser.add_argument('directory_path_2', metavar='directory_path_2', action="store",
                 help="The second directory to search for executables.")
-    parser.add_argument('command', metavar='command', action="store",
-                        help='command to run the tests')
-    parser.add_argument('command_arg', metavar='command_arg', action="store", nargs='*',
-                        help='command arguments')
+    parser.add_argument('size_tool', metavar='size_tool', action="store", default='size',
+                        help='path to size tool')
+    parser.add_argument('size_tool_args', metavar='size_tool_args', action="store", nargs='*',
+                        help='arguments for size tool')
     return parser.parse_args()
 
 def Main():
+    args = parse_program_args()
 
-    parser = argparse.ArgumentParser(description='Search for executables and generate code size diff.')
-    args = parse_program_args(parser)
-
-    for i in range(len(args.command_arg)):
-        if not args.command_arg[i].startswith("-") and args.command_arg[i-1] != '-o':
-            args.command_arg[i] = "-" + args.command_arg[i]
+    for i in range(len(args.size_tool_args)):
+        if not args.size_tool_args[i].startswith("-") and args.size_tool_args[i-1] != '-o':
+            args.size_tool_args[i] = "-" + args.size_tool_args[i]
 
     print("First  build -> data1: ", args.directory_path_1)
     print("Second build -> data2: ", args.directory_path_2)
-    print("command: ", args.command)
-    print("command args: ", args.command_arg)
+    print("Size tool: ", args.size_tool)
+    print("Size tool args: ", args.size_tool_args)
 
+    file_command_result = subprocess.run(["file", "--version"], capture_output=True)
+    if file_command_result.returncode != 0:
+        print("Failed to run file command")
+        exit(1)
+
+    size_command_result = subprocess.run([args.size_tool, "--version"], capture_output=True)
+    if size_command_result.returncode != 0:
+        print("Failed to run size tool")
+        exit(1)
+
+    print('Collecting data for build 1')
     try:
-        data1 = collectCodeSizeData(args.directory_path_1, args.command, args.command_arg)
+        data1 = collectCodeSizeData(args.directory_path_1, args.size_tool, args.size_tool_args)
     except subprocess.CalledProcessError as e:
         print(e.returncode)
         exit()
 
+    print('Collecting data for build 2')
     try:
-        data2 = collectCodeSizeData(args.directory_path_2, args.command, args.command_arg)
+        data2 = collectCodeSizeData(args.directory_path_2, args.size_tool, args.size_tool_args)
     except subprocess.CalledProcessError as e:
         print(e.returncode)
         exit()
 
     print("################ Results ################")
-    print("data1.shape: ", data1.shape)
-    print("data2.shape: ", data2.shape)
+    print("data1 size: ", data1.shape[0])
+    print("data2 size: ", data2.shape[0])
 
     # 'dec' = 'text' + 'data' + 'bss'
     code_size1 = data1['dec'].sum()
@@ -116,12 +132,18 @@ def Main():
 
     if code_size1 > code_size2:
         print("We have savings in code size!")
-    print("Difference: ", code_size1 - code_size2)
+    else:
+        print("We have regression in code size!")
+    print("Savings: ", code_size1 - code_size2, " bytes")
 
+    savings_counter = 0
     regression_counter = 0
     for diff in data1['dec'] - data2['dec']:
         if diff < 0:
-            regression_counter = regression_counter +1
+            regression_counter = regression_counter + 1
+        elif diff > 0:
+            savings_counter = savings_counter + 1
+    print("We have savings in " + str(savings_counter) + " files." )
     print("We have regression in " + str(regression_counter) + " files." )
     print("###########################################")
 
@@ -140,6 +162,8 @@ def Main():
     positive_percentage_num = positive_percentage_mask.sum()
     print("Num of percentage greater that zero: ", positive_percentage_num)
 
+    show_plots = False
+
     if positive_percentage_num > 0:
 
         n = 20
@@ -150,6 +174,7 @@ def Main():
 
         max_x_value = top_n_savings['dec_x'].astype(float).max()
 
+        plt.figure(1, figsize=[12,8])
         plt.title("Savings", fontsize=25)
         plt.barh(np.arange(n), np.array(top_n_savings['dec_x']), label="before", edgecolor='orange', color='none')
         plt.barh(np.arange(n), np.array(top_n_savings['dec_y']), label="after")
@@ -166,7 +191,7 @@ def Main():
             # Print "-" for positive percentage to be more intuitive, because size is decreased
             plt.text(dec_pair[0]+max_x_value*0.1, i, "-" + str(round(dec_pair[2],2)) + "%", color='orange')
         plt.legend(loc='best')
-        plt.show()
+        show_plots = True
 
     else:
         print("No saving in code size.")
@@ -187,6 +212,7 @@ def Main():
 
         max_x_value = top_n_regressions['dec_x'].astype(float).max()
 
+        plt.figure(2, figsize=[12,8])
         plt.title("Regressions", fontsize=25)
         plt.barh(np.arange(n), np.array(top_n_regressions['dec_y']), label="after")
         plt.barh(np.arange(n), np.array(top_n_regressions['dec_x']), label="before", edgecolor='orange', color='none')
@@ -203,10 +229,13 @@ def Main():
             # Print "+" for negative percentage to be more intuitive, because size is increased
             plt.text(dec_pair[0]+max_x_value*0.1, i, "+" + str(-1*round(dec_pair[2],2)) + "%", color='blue')
         plt.legend(loc='lower right')
-        plt.show()
+        show_plots = True
 
     else:
         print("No regressions in code size.")
+
+    if show_plots:
+        plt.show()
 
 if __name__ == "__main__":
   Main()
